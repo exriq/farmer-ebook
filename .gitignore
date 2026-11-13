@@ -1,0 +1,4 @@
+.streamlit/secrets.toml
+farmers.db
+__pycache__/
+.vscode/
