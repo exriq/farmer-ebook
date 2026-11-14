@@ -1,231 +1,178 @@
+"""UkulimaKonect - main file. You paste this ONCE (Phase 1) and never change it.
+Each phase adds new files, and this file finds them by itself."""
+import importlib
+import importlib.util
+ 
 import streamlit as st
-from datetime import date
+ 
+import config
 import db
-
-st.set_page_config(page_title="Farmer E-Book", page_icon="🌾")
-db.init_db()
-
-if "farmer" not in st.session_state:
-    st.session_state.farmer = None
-
-SUB_COUNTIES = [
-    "Homa Bay Town", "Kabondo Kasipul", "Karachuonyo", "Kasipul",
-    "Ndhiwa", "Rangwe", "Suba North", "Suba South", "Other",
-]
-FARM_TYPES = ["Crops", "Livestock"]
-
-# ---------- CROP OPTIONS ----------
-CROPS = [
-    "Maize", "Groundnuts", "Cotton", "Sorghum", "Finger millet", "Beans",
-    "Green grams", "Cassava", "Sweet potato", "Rice", "Vegetables", "Other",
-]
-CROP_ACTIVITIES = {
-    "Planting": ["acres"],
-    "Fertilizer applied": ["kg", "bags"],
-    "Spraying": ["litres", "acres"],
-    "Weeding": ["acres"],
-    "Harvest": ["kg", "bags"],
-}
-
-# ---------- LIVESTOCK OPTIONS ----------
-HERD_EVENTS = ["Born", "Died", "Bought", "Sold", "Vaccinated", "Dewormed",
-               "Tick control", "Treated for illness", "AI / service"]
-ANIMAL_ACTIVITIES = {
-    "Cattle (dairy)": HERD_EVENTS + ["Calved", "Milk produced"],
-    "Cattle (beef/zebu)": HERD_EVENTS + ["Calved"],
-    "Goats": HERD_EVENTS + ["Kidded", "Milk produced"],
-    "Sheep": HERD_EVENTS + ["Lambed"],
-    "Chickens": ["Bought", "Hatched", "Died", "Sold", "Vaccinated",
-                 "Treated for illness", "Eggs collected"],
-    "Fish": ["Stocked fingerlings", "Feed given", "Died", "Catch / harvest"],
-    "Other": HERD_EVENTS,
-}
-LIVESTOCK_UNITS = {
-    "Milk produced": ["litres"],
-    "Eggs collected": ["eggs", "trays"],
-    "Feed given": ["kg"],
-    "Stocked fingerlings": ["fingerlings"],
-    "Catch / harvest": ["kg", "pieces"],
-}
-
-
-def show_records(table, farmer_id):
-    st.subheader("Recent records")
-    df = db.get_records(table, farmer_id)
-    if df.empty:
-        st.info("No records yet.")
-    else:
-        st.dataframe(df, width="stretch", hide_index=True)
-
-
-# ---------- LOGIN / REGISTER ----------
+ 
+st.set_page_config(page_title=config.APP_NAME, page_icon="🌾", layout="wide")
+ 
+st.markdown("""
+<style>
+[data-testid="stSidebar"] {background-color: #E6F0D8;}
+h1, h2, h3 {color: #5A3E2B;}
+h1 {border-bottom: 3px solid #D4A017; padding-bottom: 0.2rem;}
+[data-testid="stMetric"] {background: #F6F9EF; border-left: 5px solid #D4A017;
+    padding: 0.6rem 0.8rem; border-radius: 6px;}
+</style>
+""", unsafe_allow_html=True)
+ 
+try:
+    db.init_db()
+except Exception as error:
+    print("DATABASE ERROR:", repr(error))
+    st.error("The database cannot be reached right now. Please try again in a minute.")
+    st.stop()
+ 
+st.session_state.setdefault("user", None)
+ 
+# Page files, in the order they are looked for. Missing files are skipped.
+MODULES = ["records", "farm_profile", "inputs_labour", "dashboard",
+           "market_info", "staff", "marketplace", "chat"]
+ 
+ 
+def load_pages():
+    importlib.invalidate_caches()
+    pages = []
+    for name in MODULES:
+        if importlib.util.find_spec(name) is not None:
+            module = importlib.import_module(name)
+            pages.extend(getattr(module, "PAGES", []))
+    return sorted(pages, key=lambda p: p["order"])
+ 
+ 
+def allowed(page, user):
+    if user["role"] not in page["roles"]:
+        return False
+    types = page.get("types")
+    if types and user["role"] == "farmer" and user["farming_type"] not in types:
+        return False
+    return True
+ 
+ 
+# ---------- LOG IN / REGISTER ----------
 def login_page():
-    st.title("🌾 Farmer E-Book")
+    st.title("🌾 " + config.APP_NAME)
+    st.caption("Farm records, market prices and farmer-to-farmer trade for Homa Bay County")
     tab_login, tab_register = st.tabs(["Log in", "Register"])
-
+ 
     with tab_login:
         with st.form("login_form"):
-            phone = st.text_input("Phone number")
+            phone = st.text_input("Phone number", placeholder="07XXXXXXXX")
             password = st.text_input("Password", type="password")
             if st.form_submit_button("Log in"):
-                result = db.check_login(phone, password)
-                if result:
-                    st.session_state.farmer = {
-                        "id": result[0], "name": result[1], "types": result[2]
-                    }
-                    st.rerun()
-                else:
+                user = db.check_login(config.normalize_phone(phone) or phone, password)
+                if not user:
                     st.error("Wrong phone number or password.")
-
-    with tab_register:
-        with st.form("register_form"):
-            name = st.text_input("Full name")
-            phone = st.text_input("Phone number (used to log in)")
-            sub_county = st.selectbox("Sub-county", SUB_COUNTIES)
-            types = st.multiselect(
-                "What do you farm? (choose all that apply)", FARM_TYPES,
-                help="Livestock includes cattle, goats, sheep, chickens and fish.",
-            )
-            password = st.text_input("Choose a password", type="password")
-            if st.form_submit_button("Create account"):
-                if not name or not phone or not types or len(password) < 6:
-                    st.error("Fill in everything, choose at least one type of farming, "
-                             "and use a password of 6+ characters.")
-                elif db.create_farmer(name, phone, sub_county, types, password):
-                    st.success("Account created. Go to the Log in tab.")
+                elif not user["active"]:
+                    st.error("This account has been switched off. Please contact your "
+                             "sub-county coordinator.")
                 else:
-                    st.error("That phone number is already registered.")
-
-
-# ---------- MONEY ----------
-def money_page(fid):
-    st.header("💰 Money")
-    with st.form("money_form", clear_on_submit=True):
-        entry_date = st.date_input("Date", date.today())
-        kind = st.radio("Type", ["Income", "Expense"], horizontal=True)
-        category = st.selectbox("Category", [
-            "Crop sales", "Cotton sales", "Milk sales", "Livestock sales",
-            "Poultry/eggs", "Fish sales",
-            "Seed & fertilizer", "Feed", "Drugs & vet", "Fingerlings",
-            "Labour", "Transport", "Other",
-        ])
-        description = st.text_input("Note (optional)")
-        amount = st.number_input("Amount (KES)", min_value=0.0, step=50.0)
-        if st.form_submit_button("Save"):
-            if amount > 0:
-                db.add_record("money", fid, entry_date, kind=kind, category=category,
-                              description=description, amount=amount)
-                st.success("Saved.")
+                    st.session_state.user = user
+                    st.rerun()
+ 
+    with tab_register:
+        register_form()
+ 
+ 
+def register_form():
+    with st.form("register_form"):
+        st.subheader("About you")
+        name = st.text_input("Full name")
+        gender = st.selectbox("Gender", config.GENDERS)
+        phone = st.text_input("Phone number (used to log in)", placeholder="07XXXXXXXX")
+        sub_county = st.selectbox("Sub-county", config.SUB_COUNTIES)
+        ward = st.text_input("Ward")
+        village = st.text_input("Village")
+        st.subheader("Your farming")
+        farming_type = st.selectbox(
+            "What kind of farming do you do?", config.FARMING_TYPES,
+            format_func=lambda t: f"{t} - {config.FARMING_TYPE_HELP[t]}")
+        with st.expander("Farm location (optional)"):
+            st.caption("Stand at your farm, open Google Maps, touch the blue dot, and "
+                       "copy the two numbers shown. You can also add this later.")
+            lat_text = st.text_input("Latitude", placeholder="-0.5273")
+            lon_text = st.text_input("Longitude", placeholder="34.4571")
+        st.subheader("Privacy")
+        in_directory = st.checkbox(
+            "Let other registered farmers find me in the farmer directory and message me",
+            value=True)
+        share_contact = st.checkbox(
+            "Show my phone number on my marketplace posts", value=False)
+        st.subheader("Password")
+        password = st.text_input("Choose a password (8 or more characters)",
+                                 type="password")
+        password2 = st.text_input("Type the password again", type="password")
+        consent = st.checkbox(
+            "I agree that UkulimaKonect may store my details and farm records to "
+            "support farmers in Homa Bay County. I understand that the platform "
+            "administrators can see my records, and that my sub-county coordinator "
+            "can see my profile details.")
+ 
+        if st.form_submit_button("Create account"):
+            clean_phone = config.normalize_phone(phone)
+            lat, lat_error = config.parse_coordinate(
+                lat_text, *config.LAT_RANGE, "Latitude")
+            lon, lon_error = config.parse_coordinate(
+                lon_text, *config.LON_RANGE, "Longitude")
+            problem = None
+            if not name.strip() or not ward.strip() or not village.strip():
+                problem = "Please fill in your name, ward and village."
+            elif not clean_phone:
+                problem = "Enter a Kenyan mobile number such as 0712345678."
+            elif lat_error or lon_error:
+                problem = lat_error or lon_error
+            elif (lat is None) != (lon is None):
+                problem = "Fill in both latitude and longitude, or leave both empty."
+            elif len(password) < 8:
+                problem = "The password must have 8 or more characters."
+            elif password != password2:
+                problem = "The two passwords do not match."
+            elif not consent:
+                problem = "Please tick the box to agree before creating your account."
+            if problem:
+                st.error(problem)
+                return
+            info = {"name": name.strip(), "phone": clean_phone, "gender": gender,
+                    "sub_county": sub_county, "ward": ward.strip(),
+                    "village": village.strip(), "farming_type": farming_type,
+                    "latitude": lat, "longitude": lon,
+                    "share_contact": share_contact, "in_directory": in_directory}
+            if db.create_farmer(info, password):
+                st.session_state.user = db.check_login(clean_phone, password)
+                st.rerun()
             else:
-                st.error("Enter an amount above 0.")
-    show_records("money", fid)
-
-
-# ---------- CROPS ----------
-def crops_page(fid):
-    st.header("🌽 Crops")
-    crop = st.selectbox("Crop", CROPS, key="crop_pick")
-    activity = st.selectbox("What did you do?", list(CROP_ACTIVITIES), key="crop_act")
-    with st.form("crops_form", clear_on_submit=True):
-        entry_date = st.date_input("Date", date.today())
-        quantity = st.number_input("How much?", min_value=0.0, step=1.0)
-        unit = st.selectbox("Unit", CROP_ACTIVITIES[activity])
-        note = st.text_input("Note (optional, e.g. rains came late)")
-        if st.form_submit_button("Save"):
-            if quantity > 0:
-                db.add_record("crops", fid, entry_date, crop=crop, activity=activity,
-                              quantity=quantity, unit=unit, note=note)
-                st.success("Saved.")
-            else:
-                st.error("Enter a quantity above 0.")
-    show_records("crops", fid)
-
-
-# ---------- LIVESTOCK ----------
-def livestock_page(fid):
-    st.header("🐂 Livestock")
-    animal = st.selectbox("Animal", list(ANIMAL_ACTIVITIES), key="animal_pick")
-    activity = st.selectbox("What happened?", ANIMAL_ACTIVITIES[animal], key="animal_act")
-    units = LIVESTOCK_UNITS.get(activity, ["animals"])
-    with st.form("livestock_form", clear_on_submit=True):
-        entry_date = st.date_input("Date", date.today())
-        quantity = st.number_input("How many / how much?", min_value=0.0, step=1.0)
-        unit = st.selectbox("Unit", units)
-        note = st.text_input("Note (optional, e.g. which cow, drug used, withdrawal days)")
-        if st.form_submit_button("Save"):
-            if quantity > 0:
-                db.add_record("livestock", fid, entry_date, animal=animal,
-                              activity=activity, quantity=quantity, unit=unit, note=note)
-                st.success("Saved.")
-            else:
-                st.error("Enter a number above 0.")
-    show_records("livestock", fid)
-
-
-# ---------- SUMMARY ----------
-def dashboard_page(farmer):
-    fid = farmer["id"]
-    types = farmer["types"]
-    st.header("📊 My Summary")
-
-    money = db.get_records("money", fid)
-    income = money.loc[money["kind"] == "Income", "amount"].sum()
-    expense = money.loc[money["kind"] == "Expense", "amount"].sum()
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Income", f"KES {income:,.0f}")
-    c2.metric("Expenses", f"KES {expense:,.0f}")
-    c3.metric("Profit", f"KES {income - expense:,.0f}")
-
-    st.subheader("Spending by category")
-    spend = money[money["kind"] == "Expense"]
-    if spend.empty:
-        st.info("Add expenses to see where your money goes.")
-    else:
-        st.bar_chart(spend.groupby("category")["amount"].sum())
-
-    if "Crops" in types:
-        st.subheader("🌽 Crops")
-        crops = db.get_records("crops", fid)
-        if crops.empty:
-            st.info("Record planting and harvest to see totals here.")
-        else:
-            totals = crops.groupby(["crop", "activity", "unit"], as_index=False)["quantity"].sum()
-            st.dataframe(totals, width="stretch", hide_index=True)
-
-    if "Livestock" in types:
-        st.subheader("🐂 Livestock")
-        stock = db.get_records("livestock", fid)
-        if stock.empty:
-            st.info("Record births, sales, treatments and production to see totals here.")
-        else:
-            totals = stock.groupby(["animal", "activity", "unit"], as_index=False)["quantity"].sum()
-            st.dataframe(totals, width="stretch", hide_index=True)
-
-            milk = stock[stock["activity"] == "Milk produced"]
-            if not milk.empty:
-                st.subheader("🥛 Milk per day (litres)")
-                st.bar_chart(milk.groupby("entry_date")["quantity"].sum())
-
-
+                st.error("That phone number is already registered. Use the Log in tab.")
+ 
+ 
 # ---------- MAIN ----------
-farmer = st.session_state.farmer
-
-if farmer is None:
+user = st.session_state.user
+if user is None:
     login_page()
-else:
-    pages = {"My Summary": None, "Money": money_page}
-    if "Crops" in farmer["types"]:
-        pages["Crops"] = crops_page
-    if "Livestock" in farmer["types"]:
-        pages["Livestock"] = livestock_page
-
-    st.sidebar.write(f"Hello, **{farmer['name']}**")
-    choice = st.sidebar.radio("Menu", list(pages.keys()))
-    if st.sidebar.button("Log out"):
-        st.session_state.farmer = None
-        st.rerun()
-
-    if choice == "My Summary":
-        dashboard_page(farmer)
-    else:
-        pages[choice](farmer["id"])
+    st.stop()
+ 
+pages = [p for p in load_pages() if allowed(p, user)]
+labels = [p["label"] for p in pages]
+if st.session_state.get("menu_choice") not in labels:
+    st.session_state.pop("menu_choice", None)
+ 
+st.sidebar.markdown(f"### 🌾 {config.APP_NAME}")
+st.sidebar.write(f"Hello, **{user['name']}**")
+if user["role"] != "farmer":
+    st.sidebar.caption(f"{user['role'].title()} - {user['sub_county']}")
+choice = st.sidebar.radio("Menu", labels, key="menu_choice")
+if st.sidebar.button("Log out"):
+    st.session_state.clear()
+    st.rerun()
+ 
+page = pages[labels.index(choice)]
+try:
+    page["func"](user)
+except Exception as error:
+    print("PAGE ERROR:", page["label"], repr(error))
+    st.error("Something went wrong on this page. Please try again.")
+    if user["role"] == "admin":
+        st.exception(error)
