@@ -3,19 +3,19 @@ When market_info.py is installed (Phase 3) it also shows market prices and
 opportunities."""
 import importlib.util
 from datetime import date
- 
+
 import pandas as pd
 import streamlit as st
- 
+
 import config
 import db
 from inputs_labour import stock_table
- 
- 
+
+
 def to_kg(quantity, unit):
     return quantity * config.UNIT_TO_KG.get(unit, 1)
- 
- 
+
+
 # ---------- PRODUCE ----------
 def crop_produce(user, prof):
     st.subheader("🌽 Crops: harvested compared with what your farm could give")
@@ -30,7 +30,7 @@ def crop_produce(user, prof):
     season = st.selectbox("Season", sorted(seasons, reverse=True), key="crop_season")
     if not harvest.empty:
         got = harvest[harvest["season"] == season].groupby("crop")["kg"].sum().to_dict()
- 
+
     mine = db.get_farmer_crops(user["id"])
     reference = db.get_yield_reference().set_index("crop")["kg_per_acre"].to_dict()
     fertility = config.FERTILITY.get(prof["fertility"], 0.85)
@@ -64,17 +64,17 @@ def crop_produce(user, prof):
                "promise.")
     if missing:
         st.caption("No reference yield yet for: " + ", ".join(missing))
- 
- 
+
+
 def livestock_produce(user):
     st.subheader("🐂 Animals and animal produce")
     herd = db.get_farm_animals(user["id"])
     if herd.empty:
         st.info("List your animals in My Farm to see them here.")
     else:
-        st.dataframe(herd.drop(columns=["id"]).rename(columns={
-            "animal": "Animal", "system": "System", "breed": "Breed",
-            "head_count": "Number"}), width="stretch", hide_index=True)
+        st.dataframe(herd.groupby("animal", as_index=False)["head_count"].sum().rename(
+            columns={"animal": "Animal", "head_count": "Number"}),
+            width="stretch", hide_index=True)
     records = db.get_records("livestock_records", user["id"])
     produce = records[records["activity"].isin(config.PRODUCTION_ACTIVITIES)].copy()
     seasons = {config.season_label(date.today())}
@@ -90,7 +90,7 @@ def livestock_produce(user):
     st.dataframe(totals.rename(columns={
         "animal": "Animal", "activity": "Produce", "unit": "Unit",
         "quantity": "Total"}), width="stretch", hide_index=True)
- 
+
     rows = []
     for (animal, activity), (unit, per_year) in config.ANIMAL_POTENTIAL_PER_YEAR.items():
         count = herd.loc[herd["animal"] == animal, "head_count"].sum() if not herd.empty else 0
@@ -108,16 +108,16 @@ def livestock_produce(user):
         st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
         st.caption("Possible = animals x a typical yearly yield, halved for one season. "
                    "It is only an estimate.")
- 
- 
+
+
 def produce_section(user):
     prof = db.get_farm_profile(user["id"])
     if user["farming_type"] in ("Crops", "Mixed"):
         crop_produce(user, prof)
     if user["farming_type"] in ("Livestock", "Mixed"):
         livestock_produce(user)
- 
- 
+
+
 # ---------- MONEY ----------
 def cash_section(user):
     st.subheader("💰 Cash coming in and going out")
@@ -134,7 +134,7 @@ def cash_section(user):
             pivot[column] = 0.0
     pivot = pivot[["Income", "Expense"]].sort_index()
     pivot["Profit / loss"] = pivot["Income"] - pivot["Expense"]
- 
+
     c1, c2, c3 = st.columns(3)
     c1.metric("Total income", f"KES {pivot['Income'].sum():,.0f}")
     c2.metric("Total expenses", f"KES {pivot['Expense'].sum():,.0f}")
@@ -145,8 +145,16 @@ def cash_section(user):
     if not spend.empty:
         st.write("**Where the money goes**")
         st.bar_chart(spend.groupby("category")["amount"].sum(), color="#B5651D")
- 
- 
+    sales = money[money["kind"] == "Income"].copy()
+    if not sales.empty:
+        sales["product"] = sales["product"].fillna(sales["category"])
+        sales["enterprise"] = sales["enterprise"].fillna("Whole farm")
+        st.write("**Where my income comes from (by product)**")
+        by = sales.groupby(["enterprise", "product"], as_index=False)["amount"].sum()
+        by["Product"] = by["enterprise"] + " – " + by["product"]
+        st.bar_chart(by.set_index("Product")["amount"], color="#2E7D32")
+
+
 # ---------- INPUTS AND LABOUR ----------
 def inputs_section(user):
     st.subheader("🧺 Inputs in store")
@@ -171,8 +179,8 @@ def inputs_section(user):
     by_work = labour.groupby("activity")["people_days"].sum()
     st.write("**Person-days by type of work**")
     st.bar_chart(by_work, color="#2E7D32")
- 
- 
+
+
 # ---------- THE PAGE ----------
 def dashboard_page(user):
     st.header("📊 My Dashboard")
@@ -186,7 +194,7 @@ def dashboard_page(user):
     if sum(land.values()) == 0:
         st.info("Open My Farm and fill in your land details to get the most from "
                 "this dashboard.")
- 
+
     sections = ["Produce", "Cash flow", "Inputs and labour"]
     has_market = importlib.util.find_spec("market_info") is not None
     if has_market:
@@ -201,8 +209,8 @@ def dashboard_page(user):
     else:
         import market_info
         market_info.dashboard_section(user)
- 
- 
+
+
 PAGES = [
     {"order": 5, "label": "📊 My Dashboard", "func": dashboard_page,
      "roles": ("farmer",)},

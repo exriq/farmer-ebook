@@ -1,15 +1,15 @@
 """Pages made for agrovets: My Shop (prices that farmers see) and Demand near me."""
 from datetime import date
- 
+
 import streamlit as st
- 
+
 import chat
 import config
 import db
 import extras
 import style
- 
- 
+
+
 @st.dialog("Add or update a price")
 def price_dialog(user):
     name = st.text_input("Product", placeholder="e.g. DAP fertiliser, hybrid maize seed")
@@ -28,8 +28,8 @@ def price_dialog(user):
                 user["id"]))
         st.toast("Price saved ✓")
         st.rerun()
- 
- 
+
+
 def shop_page(user):
     style.header("My Shop", "The prices farmers in your sub-county can see")
     mine = db.table("SELECT id, entry_date, item, unit, price FROM input_prices "
@@ -54,8 +54,8 @@ def shop_page(user):
                               "unit": "Per", "price": "Price (KES)"},
                               lambda i: db.run("DELETE FROM input_prices WHERE id = %s "
                                                "AND uploaded_by = %s", (i, user["id"])))
- 
- 
+
+
 def demand_page(user):
     sub = user["sub_county"]
     if user["role"] == "admin":
@@ -70,6 +70,7 @@ def demand_page(user):
                                  COUNT(DISTINCT a.farmer_id) AS "Farmers"
                           FROM farm_animals a JOIN farmers f ON f.id = a.farmer_id
                           WHERE f.sub_county = %s AND f.active AND f.role = 'farmer'
+                            AND COALESCE(a.status, 'Active') = 'Active'
                           GROUP BY a.animal ORDER BY SUM(a.head_count) DESC""", (sub,))
     left, right = st.columns(2)
     with left, st.container(border=True):
@@ -90,8 +91,8 @@ def demand_page(user):
             st.caption(f"Most kept: **{animals.iloc[0]['Animal']}**. Think about feed, "
                        "vaccines and dewormers for it.")
     st.caption("These are totals only. No farmer's name or phone number is shown here.")
- 
- 
+
+
 PAGES = [
     {"order": 15, "label": "🏪 My Shop", "func": shop_page, "roles": ("agrovet",)},
     {"order": 16, "label": "🌾 Demand near me", "func": demand_page,
